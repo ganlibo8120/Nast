@@ -1,0 +1,7 @@
+Epoch:20
+mAP: 0
+AP_50: 0
+AP_75: 0
+AP_small: 0
+AP_m: 0
+AP_l: 0
