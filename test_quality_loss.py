@@ -69,6 +69,46 @@ def extra_loss(pred, target):
             Loss += torch.mean(loss)
     return Loss
 
+def extra_loss(pred, target):
+
+    label, score = target
+    n,c = pred.shape
+    pred = torch.cat([pred,torch.zeros([n,1],device='cuda')],dim=1)
+    allC = []
+    labelBool = label!=c
+    labelBool0 = label==c
+    label0 = label[labelBool]
+    num = label0.shape[0]
+    #print(num)
+    Loss = torch.zeros(n).cuda()
+
+    #pred = pred[:,label]
+    #print(pred.shape,score.shape,'￥$￥$￥$￥$￥$￥')
+
+    #Loss[labelBool] = (score[labelBool] - 0.9)*torch.log( torch.max(1+pred[labelBool]-score[labelBool] ,torch.tensor(0.001,device='cuda')))
+
+    low = random.randint(num//3,num-2)
+    high = random.randint(low,num)
+
+    for i in range(low,high):
+        if  label0[i] not in allC:
+
+            allC.append(label0[i])
+            idx = label == label0[i]
+            scorc = score[idx]
+            predc = pred[:,label0[i]]
+            labelc = label[idx]
+            predc = predc[idx]
+            #Max,index = torch.max(predc,dim=0)
+            #scorc = scorc - 0.9#scorc[index]
+            loss = -(scorc-0.9)*torch.log( torch.min(torch.max(1+predc-scorc ,torch.tensor(0.01,device='cuda')),torch.tensor(1,device='cuda')))
+            #loss = loss[loss>=0]
+            Loss[idx] = loss
+    #bol = Loss < 0
+    #Loss[bol] = 0
+    #Loss[labelBool0] = 0
+    #print(0.1*Loss[Loss!=0])
+    return 0.05*Loss
 if __name__ == '__main__':
     preds = -10000*torch.ones([5,80])
     target1 = torch.randint(0,80,[5,])
