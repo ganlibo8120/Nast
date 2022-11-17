@@ -1,0 +1,137 @@
+mobilenet + mobilevit + ToMe
+
+from GRU import ConvGRU,Head  #模型，注意模型设计的时候一定要参数初始化
+import torch
+from scipy import io
+import numpy as np
+import torch.optim as opt
+from  torch.utils.data import DataLoader,Dataset
+import torch.nn as nn
+import torch.nn.functional as F
+from  torchsummary import  summary
+#固定随机种子，主要是torch，numpy,random这三个库的随机种子。
+use_gpu = torch.cuda.is_available()# 查询GPU是否可用
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")#设置网络运行的设备：GPU or CPU
+
+
+if use_gpu:
+        dtype = torch.cuda.FloatTensor # computation in GPU
+else:
+        dtype = torch.FloatTensor
+
+
+
+net = ConvGRU(input_size=(1,1),
+              input_dim=60,hidden_dim=[512,512,1024],
+              kernel_size=(1,1),num_layers=3,dtype=dtype,
+              batch_first=True,bias=True,
+              return_all_layers=True)
+net.cuda()
+input_data = torch.randn((1,1,64,1,1)).cuda()
+
+
+
+
+#将数据集分为训练集和测试集
+data_root = 'train_val_bpm.mat'
+train_val_data = io.loadmat(data_root)
+train_signal = []
+train_bpm = []
+test_signal = []
+test_bpm = []
+for i in range(len(train_val_data['signal'][0])):
+        if np.random.rand()>0.5:
+                train_signal.append(train_val_data['signal'][0][i])
+                train_bpm.append(int((int(train_val_data['bpm'][0][i])-50)/2.5))
+        else:
+                test_signal.append(train_val_data['signal'][0][i])
+                test_bpm.append(int((int(train_val_data['bpm'][0][i])-50)/2.5))
+
+#用Dataset这个类和Dataloader这两个类构造数据加载函数,数据增强操作一般也要写在里面
+#如果是图片的话可以用下面的函数，但是下面的只能得到C H W大小的张量，所以还是上面的方法更加通用
+
+#PicTransform = transforms.Compose([transforms.Grayscale(),transforms.ToTensor()])
+#    train_data = ImageFolder(root, PicTransform)
+#train_loader = Data.DataLoader(dataset=train_data,shuffle=True,batch_size=1)
+class DataSets(Dataset):
+        def __init__(self,signal=None,bpm=None,require_grad=False):
+            #data = io.loadmat(data_root)
+            self.signal = signal
+            self.bpm = bpm
+            self.require_grad = require_grad
+
+        def __len__(self):
+                return len(self.signal)  #数据总长度
+
+        def __getitem__(self, item):
+                signal = self.signal[item]
+                bpm = self.bpm[item]
+                signal = signal[0][-60:]
+                signal = torch.tensor(signal,dtype=torch.float,device='cpu',requires_grad=self.require_grad) #转tensor设置需不需要梯度
+                bpm = torch.tensor(bpm,dtype=torch.long,device='cpu')
+                signal = signal.view(1,60,1,1)
+
+                return {'signal':signal,'bpm':bpm} #以字典的形式返回，当然也可以以其他的形式
+
+head = Head(in_dim=1024).cuda()
+
+train_datatset = DataSets(train_signal,train_bpm,True)#数据集
+train_dataloader = DataLoader(train_datatset,batch_size=4,shuffle=True)#数据加载
+
+optimizer = opt.AdamW(list(net.parameters())+ list(head.parameters()),lr =0.001,weight_decay=0.05)  #优化器
+loss_fuc = nn.CrossEntropyLoss() #损失函数
+
+#训练
+
+net.train()  #设置网络状态为 网络训练 否则网络无法更新梯度
+head.train() #设置网络状态为 网络训练 否则网络无法更新梯度
+for epoch in range(100):
+        if epoch % 3 == 1 and epoch > 10:
+                optimizer.param_groups[0]['lr'] = optimizer.param_groups[0]['lr'] * 0.95
+        for i ,batch in enumerate(train_dataloader):
+                optimizer.zero_grad()  #优化器清除梯度
+                x = batch['signal'].cuda()
+                y = batch['bpm'].cuda()
+
+                out,state = net(x,None)  #网络前向传播
+                outs = head(out[-1])
+                #print(y.shape,outs.shape)
+
+                loss = loss_fuc(outs,y) #计算损失
+                loss.backward()     #网络后向传播
+                optimizer.step()    #更新梯度
+                print('epoch:',epoch,'it:',i,' ',loss.item())  #打印损失
+torch.save(net.state_dict(),'bpm_gru.pth',_use_new_zipfile_serialization=False)  #保存模型参数 ，后面这个参数设置为False可以防止因torch版本不同而无法加载
+torch.save(head.state_dict(),'bpm_head.pth',_use_new_zipfile_serialization=False) #保存模型参数
+
+
+
+
+
+#测试
+test_datatset = DataSets(test_signal,test_bpm,False)#数据集
+test_dataloader = DataLoader(test_datatset,batch_size=1,shuffle=True)#数据加载
+
+
+net.eval() #设置网络状态为测试状态，否则在测试过程中网络状态会更新
+head.eval()
+
+sums = 0 #测试样例总数
+correct = 0 #测试正确的数目
+with torch.no_grad(): #测试时不要计算梯度，否则会占用大量显存
+    for i, batch in enumerate(test_dataloader):
+        x = batch['signal'].cuda()
+        y = batch['bpm']
+
+        out, state = net(x, None)  # 网络前向传播
+        outs = head(out[-1])
+
+        b,c = outs.shape
+        sums+=b
+
+        outs = torch.argmax(outs,dim=1)
+        outs = outs.cpu().numpy()
+        y=y.numpy()
+        print(y,outs)
+        correct += np.sum(np.abs(y - outs)<5)
+print(correct/sums)
